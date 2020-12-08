@@ -1,0 +1,207 @@
+#### **Title:** CS598-PSL-MovieRecommendation - Final Project
+#### **Team members:** gsr2 and balajis2
+#### **Date:** 12/7/2020
+
+##### Load the required library files and the dataset
+
+```{r message=FALSE}
+library(data.table)
+library(dplyr)
+
+MoviesDataURL = paste0("data/","movies.dat")
+RatingsDataURL = paste0("data/","ratings.dat")
+UserDataURL = paste0("data/","users.dat")
+
+movies = readLines(MoviesDataURL)
+movies = strsplit(movies, split = "::", fixed = TRUE, useBytes = TRUE)
+movies = matrix(unlist(movies), ncol = 3, byrow = TRUE)
+movies = data.frame(movies, stringsAsFactors = FALSE)
+colnames(movies) = c('MovieID', 'Title', 'Genres')
+movies$MovieID = as.integer(movies$MovieID)
+movies$Title = iconv(movies$Title, "latin1", "UTF-8")
+
+small_image_url = "https://liangfgithub.github.io/MovieImages/"
+movies$image_url = sapply(movies$MovieID, 
+                          function(x) paste0(small_image_url, x, '.jpg?raw=true'))
+movies$seqno = 1:nrow(movies)
+
+# reading the ratings data
+ratings = read.csv(RatingsDataURL, sep = ':', 
+                   colClasses = c('integer', 'NULL'), header = FALSE)
+colnames(ratings) = c('UserID', 'MovieID', 'Rating', 'Timestamp')
+
+# Splitting the genres into different Movie genre columns
+movie_genre_df = as.data.frame(movies$Genres,stringsAsFactors = FALSE)
+movie_genre_df = as.data.frame(tstrsplit(movie_genre_df[,1],"[|]",type.convert = TRUE))
+colnames(movie_genre_df) = c("Genre1","Genre2","Genre3","Genre4","Genre5","Genre6")
+movie_genre_df[,"MovieID"] = movies$MovieID
+
+```
+**For system 1**, we considered two approaches A and B for determining the
+popularity of a movie based on the user selected genre
+
+**_For system 1 - Approach A_**
+
+1. Filter all the movies in the dataframe based on the input genre
+
+2. Calculate total number of movies and total number of rating for all 
+   the movies in the selected genre
+
+3. Calculate average star rating for each movie (similar to how 
+  amazon calculates average rating for each products in their website)
+    
+  average star rating = (no of 5 star ratings for the movie) * 5 +
+                        (no of 4 star ratings for the movie) * 4 +      
+                        (no of 3 star ratings for the movie) * 3 +
+                        (no of 2 star ratings for the movie) * 2 +
+                        (no of 1 star ratings for the movie) * 1 
+                        / total no. of ratings for the movie 
+                        
+4. calculate the weights for each movie as shown below
+
+   weight factor = (total reviews for the movie)/(total number of reviews for     all the movies)
+   
+5. Multiple the average star rating with the weight factor to generate the score
+
+6. Order the score in increasing order and filter the first 10 records
+
+The above approach ensures that the movies with low number of ratings
+but have more 5 stars and 4 stars gets a fair chance in the ranking
+
+```{r}
+get_movie_genre_recomm1 <- function(genre_input,movie_genre,ratings) {
+  
+  if(genre_input == "Children"){
+    userSelectedGenre = "Children's"
+  }
+  else{
+    userSelectedGenre = genre_input  
+  }
+  
+  dat.query <- filter(movie_genre, Genre1==userSelectedGenre|Genre2==userSelectedGenre|Genre3==userSelectedGenre|Genre4==userSelectedGenre|Genre5==userSelectedGenre|Genre6==userSelectedGenre)
+  MoviesByGenre <- ratings %>% filter(MovieID %in% dat.query$MovieID)
+  
+  totalmovies = nrow(dat.query)
+  totalreviews = nrow(MoviesByGenre)
+  
+  genre_matrix = matrix(0,totalmovies,11)
+  
+  colnames(genre_matrix) = c("MovieID","totalratingbygenre","totalratingbyMovie","5star","4star","3star","2star","1star","AvgStarRating","TotalWeight","CalcRank")
+  
+  genre_matrix[,1] = as.integer(dat.query[,"MovieID"])
+  genre_matrix[,2] = as.integer(totalreviews)
+  
+  for (i in 1:nrow(genre_matrix)){
+    tmp = MoviesByGenre %>% filter(MovieID %in% genre_matrix[i,1])
+    genre_matrix[i,3] = as.integer(nrow(tmp))
+    star.5 = tmp %>% filter(Rating %in% 5)
+    star.4 = tmp %>% filter(Rating %in% 4)
+    star.3 = tmp %>% filter(Rating %in% 3)
+    star.2 = tmp %>% filter(Rating %in% 2)
+    star.1 = tmp %>% filter(Rating %in% 1)
+    genre_matrix[i,4] = as.integer(nrow(star.5))
+    genre_matrix[i,5] = as.integer(nrow(star.4))
+    genre_matrix[i,6] = as.integer(nrow(star.3))
+    genre_matrix[i,7] = as.integer(nrow(star.2))
+    genre_matrix[i,8] = as.integer(nrow(star.1))
+    genre_matrix[i,9] = ( (genre_matrix[i,4] * 5) + (genre_matrix[i,5]*4) + (genre_matrix[i,6]*3) + (genre_matrix[i,7]*2) + (genre_matrix[i,8]*1))/genre_matrix[i,3]
+    genre_matrix[i,10] = genre_matrix[i,3]/genre_matrix[i,2]
+    genre_matrix[i,11] = genre_matrix[i,9] * genre_matrix[i,10]
+    
+  } 
+  
+  result = genre_matrix[order(genre_matrix[,11],decreasing = TRUE),]
+  
+  pred_movie_id = c(result[1:10,1])
+  
+  return(pred_movie_id)
+  
+}
+genreSelected = "Animation"
+recommendedMovieIds = get_movie_genre_recomm1(genreSelected,movie_genre_df,ratings)
+
+print(recommendedMovieIds)
+```
+
+**_For system 1 - Approach B (IMDB SCORING)_ **
+
+For approach B we followed the scoring for popular movies similar to how IMDB
+calculates the movie score and then ordering for top 10 scores and filter the results.
+
+https://help.imdb.com/article/imdb/track-movies-tv/ratings-faq/G67Y87TFYYP6TWAV#ratings
+
+weighted rating (WR) = (v ÷ (v+m)) × R + (m ÷ (v+m)) × C
+
+Where:
+
+R = average for the movie (mean) = (rating)
+
+v = number of votes for the movie = (votes)
+
+m = minimum votes required to be listed in the Top Rated list 
+
+C = the mean vote across the whole report
+
+This formula provides a true 'Bayesian estimate', which takes into account the number of votes each title has received, minimum votes required to be on the list, and the mean vote for all titles
+
+```{r}
+get_movie_genre_recomm2 <- function(genre_input,movie_genre,ratings) {
+  
+  if(genre_input == "Children"){
+    userSelectedGenre = "Children's"
+  }
+  else{
+    userSelectedGenre = genre_input  
+  }
+  
+  dat.query <- filter(movie_genre, Genre1==userSelectedGenre|Genre2==userSelectedGenre|Genre3==userSelectedGenre|Genre4==userSelectedGenre|Genre5==userSelectedGenre|Genre6==userSelectedGenre)
+  MoviesByGenre <- ratings %>% filter(MovieID %in% dat.query$MovieID)
+  
+  totalmovies = nrow(dat.query)
+  totalreviews = nrow(MoviesByGenre)
+  
+  # Calculate minimum number of ratings in the filtered genre
+  genre_matrix = matrix(0,totalmovies,6)
+  m = quantile(MoviesByGenre$Rating,0.90)
+  
+  colnames(genre_matrix) = c("MovieID","v","m","R","C","Score")
+  genre_matrix[,1] = as.integer(dat.query[,"MovieID"])
+  
+  for (i in 1:nrow(genre_matrix)){
+    tmp = MoviesByGenre %>% filter(MovieID %in% genre_matrix[i,1])
+    n = as.integer(nrow(tmp))
+    star.5 = tmp %>% filter(Rating %in% 5)
+    star.4 = tmp %>% filter(Rating %in% 4)
+    star.3 = tmp %>% filter(Rating %in% 3)
+    star.2 = tmp %>% filter(Rating %in% 2)
+    star.1 = tmp %>% filter(Rating %in% 1)
+    # total number of ratings for this movie
+    genre_matrix[i,"v"] = n
+    # minimum number of ratings needed 
+    genre_matrix[i,"m"] = m
+    #average rating for the movie
+    genre_matrix[i,"R"] = ((nrow(star.5) * 5) + (nrow(star.4) * 4) + (nrow(star.3) * 3) + (nrow(star.2) * 2) + (nrow(star.1) * 1))/n
+  }
+  
+  #mean of average rating for this genre
+  genre_matrix[,"C"] = mean(genre_matrix[,"R"])
+  
+  for (i in 1:nrow(genre_matrix)){
+    genre_matrix[i,"Score"] = ((genre_matrix[i,"R"] * genre_matrix[i,"v"]) + (genre_matrix[i,"C"] * genre_matrix[i,"m"]))/(genre_matrix[i,"v"] + genre_matrix[i,"m"]) 
+  }  
+  
+  result = genre_matrix[order(genre_matrix[,"Score"],decreasing = TRUE),]
+  
+  pred_movie_id = c(result[1:10,1])
+  
+  return(pred_movie_id)
+  
+}
+
+genreSelected = "Animation"
+recommendedMovieIds = get_movie_genre_recomm2(genreSelected,movie_genre_df,ratings)
+
+print(recommendedMovieIds)
+
+```
+
